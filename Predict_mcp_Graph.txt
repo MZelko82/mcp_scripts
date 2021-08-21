@@ -1,0 +1,187 @@
+
+## Graphing Function for MCP Posterior Predictions with Annotations for Change Points
+## Author: Matt Zelko
+## R x64 4.1.0
+## RStudio  1.4.1717
+
+###-----------------------------------------------------------------------------------###
+### Predict_Graph arguments:
+		"fit_object" : mcp fitted model
+		"pcolp"  : Color Scheme list. See below.
+		"cpflag" : Logical. "1" returns Graph with Change Point Annotations, "0" does not render annotations.
+
+###-----------------------------------------------------------------------------------###
+		
+# Load Libraries
+```{r}
+library(ggplot2)
+library(mcp)
+library(dplyr)
+library(reshape)
+library(cowplot)
+```
+
+# Color Schemes
+```{r}
+# First 3 items for 3 CIs (95,90,75) in Time Series Ribbon
+# then Change Point Density Colors
+# CP list is Change Point Density Colors for Text Annotation
+pcol<-c("CR" = list(c("#96030399","#96030340", 
+                       "#f5860040","#96967840","#5d85a140")),
+             "AL" = list(c("#1d306999","#b6b0e840",
+                           "#f5860050","#96967850","#5d85a150")),
+             "PRIOR" = list(c("#7a797899","#c4c3c299",
+                              "#f5860050","#96967850","#5d85a150")),
+         "CP" = list(c("#f5860050","#96967850","#5d85a150"))) 
+```
+
+```{r echo = FALSE, message = FALSE}
+Predict_Graph <- function(fit_object, pcolp, cpflag) {
+ # Return Posterior Predictions for Fitted Model at 0.75 and 0.95 Credible Intervals 
+  predict_fitOa = predict(fit_object, summary = TRUE, nsamples = 500,
+                          probs = c(0.05, 0.25, 0.75, 0.95),
+                          rate = TRUE)
+ # Subset and Summarise 75 and 95 Credible Intervals 
+  predict_fitOa95 <- subset(predict_fitOa, select = c(time, Q5, Q95))
+  predict_fitOa95a <-  predict_fitOa95 %>%
+    group_by(time)%>%
+    dplyr::summarise(lower = mean(Q5), upper = mean(Q95))
+  predict_fitOa95a$CI = 95
+  
+  predict_fitOa75 <- subset(predict_fitOa, select = c(time, Q25, Q75))
+  predict_fitOa75a <-  predict_fitOa75 %>%
+    group_by(time)%>%
+    dplyr::summarise(lower = mean(Q25), upper = mean(Q75))
+  predict_fitOa75a$CI = 75
+ # Bind CI subsets for Graphing  
+  predict_fitOb <- rbind(predict_fitOa75a, predict_fitOa95a)
+  predict_fitOb$y <- rowMeans(predict_fitOb[,2:3])
+  predict_fitOb$CI<-as.factor(predict_fitOb$CI)
+ # Check cpflag for annotations  
+  if(cpflag == 1){
+    
+	predict_fitOat = predict(fit_object, summary = FALSE, nsamples = 500)
+    predict_fitOatt<-data.frame(predict_fitOat[ ,grepl("cp",names( predict_fitOat))])
+    predict_fitOatta<-melt(predict_fitOatt, variable = "CP")
+    predict_fitOatta$CP<-gsub("cp_","Change Point ",predict_fitOatta$CP)
+    predict_fitOatta$Dens <-predict_fitOatta$value/nrow(predict_fitOatta)
+    
+    predict_fitOattbs <-predict_fitOatta %>%
+      dplyr::group_by(CP) %>%
+      dplyr::summarise(mean = mean(value), max=max(value))
+    predict_fitOattbs$y <- seq(1:nrow(predict_fitOattbs))
+    predict_fitOattbs$mean<-round(predict_fitOattbs$mean, digits = 0)
+    
+ # Plot Density to get Y Max value for Dual Axis Time Series and Density
+    densplot<-ggplot()+ 
+      geom_density(data=predict_fitOatta, aes(x = value,fill = CP))+
+      xlim(0,300)
+    densplot_build<-ggplot_build(densplot)
+    densrange<-densplot_build[["layout"]][["panel_scales_y"]][[1]][["range"]][["range"]]
+    precoef<-densrange[2]*1.1
+    
+ # Plot Time Series and Density
+    fullplot<-ggplot() + 
+      geom_ribbon(data=predict_fitOb, aes(x = time, ymin = lower*precoef,
+                                          ymax = upper*precoef,
+                                          fill = CI, color = CI),
+                  show.legend = TRUE)+
+      scale_fill_manual(values = c("75" = pcolp[1], "95" = pcolp[2]), 
+                        aesthetics = c("fill"),
+                        name = "Credible Intervals")+
+      scale_color_manual(values = c("75" = pcolp[1], "95" = pcolp[2]), 
+                         aesthetics = c("color"),
+                         name = "Credible Intervals")+
+      new_scale_fill()+
+      new_scale_color()+
+      geom_density(data=predict_fitOatta, aes(x = value, fill = CP, 
+                                              color = CP),
+                   inherit.aes = FALSE,
+                   show.legend = TRUE) +
+      scale_fill_manual(values = pcol$CP, aesthetics = c("fill"),
+                        name = "Change Points")+
+      scale_color_manual(values = pcol$CP, aesthetics = c("color"),
+                         name = "Change Points")+
+      scale_y_continuous(labels = c(0, 25, 50, 75, 100),
+                         limits = c(0, 1*precoef),
+                         breaks = c(0,.25*precoef,
+                                    .5*precoef,.75*precoef,1*precoef),
+                         expand = c(0, 0),
+                         name = "Proportion of \n Maze Explored (%)",
+                         sec.axis = sec_axis(~.*1, 
+                         name = "Change Point Distribution \n"))+
+      scale_x_continuous(name = "Time (s)",limits = c(0,276), 
+                         breaks = c(0, 100, 200),expand = c(0, 0))+
+      labs(caption = "Note: Change Point width = 95% HDI")+
+      theme_classic()+
+      theme(plot.caption = element_text(face = "italic", hjust = -0.01),
+            legend.position="none")
+
+ # Plot Credible Legend only for appending using Cowplot   
+    CILeg <-ggplot()+ 
+      geom_ribbon(data=predict_fitOb, aes(x = time, ymin = lower*precoef,
+                                          ymax = upper*precoef,
+                                          fill = CI, color = CI),
+                  show.legend = TRUE)+
+      scale_fill_manual(values = c("75" = pcolp[1], "95" = pcolp[2]), 
+                        aesthetics = c("fill"),
+                        name = "Credible Intervals")+
+      scale_color_manual(values = c("75" = pcolp[1], "95" = pcolp[2]), 
+                         aesthetics = c("color"),
+                         name = "Credible Intervals")
+ 
+ # Plot Change Point Legend only for appending using Cowplot     
+    CPLeg<- ggplot()+
+      geom_density(data=predict_fitOatta, aes(x = value, fill = CP, 
+                                              color = CP),
+                   inherit.aes = FALSE,
+                   show.legend = TRUE) +
+      scale_fill_manual(values = pcol$CP, aesthetics = c("fill"),
+                        name = "Change Points")+
+      scale_color_manual(values = pcol$CP, aesthetics = c("color"),
+                         name = "Change Points")
+    
+    
+ # Plot Change Point labels
+    predplot3 <- ggplot()+
+      geom_text(data=predict_fitOattbs, aes(x = mean, y = y,
+                    color = CP,
+                    label = paste0(CP," ","\u00B5",": ",mean," s")),size = 3, 
+                alpha = .99,
+                show.legend = FALSE)+
+      scale_color_manual(values = pcol$CP)+
+      scale_x_continuous(name = "Time (s)",limits = c(0,276),
+                         breaks = c(0, 100, 200),expand = c(0, 0))+
+      scale_y_continuous(limits = c(0, max(predict_fitOattbs$y)+0.5),
+                         breaks = predict_fitOattbs$y)+
+      theme_void()
+ # Combine Plots and Lables
+    predplot4<-plot_grid(
+      predplot3, NULL,
+      fullplot,
+      plot_grid(get_legend(CPLeg),NULL,get_legend(CILeg), nrow = 3, 
+                rel_heights = c(1,0.2,1)), nrow=2,
+      rel_widths = c(4,1), rel_heights = c(1,10))
+  } else 
+  {
+ # Plot Time Series without Annotations    
+	predplot4 <-ggplot()+
+      geom_ribbon(data=predict_fitOb, aes(x = time, ymin = lower,
+                                          ymax = upper, 
+                                          fill = factor(CI)),
+                  show.legend = TRUE)+
+      scale_fill_manual(values = pcolp,
+                        aesthetics = c("colour", "fill"),
+                        name = "Credible Intervals")+
+      scale_y_continuous(labels = c(0,25,50,75,100),
+                         limits = c(0, 1),
+                         breaks = c(0,.25,.5,.75,1),
+                         expand = c(0, 0),
+                         name = "Proportion of \n Maze Explored (%)")+
+      scale_x_continuous(name = "Time (s)",limits = c(0,276), 
+                         breaks = c(0, 100, 200),expand = c(0, 0))+
+      theme_classic()
+  }
+  return(predplot4) 
+}
+```
